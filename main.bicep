@@ -182,18 +182,17 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
 //
 // Custom Script Extension to install DFS (Namespaces + Replication)
 //
-resource vmDfsExt 'Microsoft.Compute/virtualMachines/extensions@2025-04-01' = {
+resource vmDfsExt 'Microsoft.Compute/virtualMachines/extensions@2024-07-01' = {
   name: '${vm.name}/InstallDFS'
   location: location
-  parent: vm
   properties: {
     publisher: 'Microsoft.Compute'
     type: 'CustomScriptExtension'
     typeHandlerVersion: '1.10'
     autoUpgradeMinorVersion: true
     settings: {
-      // No external file download; just run inline PowerShell
       commandToExecute: 'powershell.exe -ExecutionPolicy Unrestricted -Command "Install-WindowsFeature FS-DFS-Namespace, FS-DFS-Replication -IncludeManagementTools"'
     }
   }
 }
+
