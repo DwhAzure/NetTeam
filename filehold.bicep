@@ -1,49 +1,65 @@
-@description('Location for all resources')
+@description('Location for all resources.')
 param location string = resourceGroup().location
 
-@description('Admin username for the local administrator account on the VM')
+@description('Name of the VM')
+param vmName string = 'vm-filehold'
+
+@description('Admin username for the VM')
 param adminUsername string
 
 @secure()
-@description('Admin password for the local administrator account on the VM')
+@description('Admin password for the VM')
 param adminPassword string
 
-@description('Size of the VM')
-param vmSize string = 'Standard_D4s_v5'
+@description('VM size.')
+param vmSize string = 'Standard_D4s_v3'
 
-@description('Existing VNet name')
+@description('Name of the existing virtual network')
 param vnetName string = 'vnet-fileshares-azusc'
 
-@description('Existing subnet name for DFS server')
-param subnetName string = 'snet-dfs-server'
+@description('Name of the existing subnet')
+param subnetName string = 'snet-filehold'
 
-var vmName = 'vm-dfs-01'
-var nicName = 'nic-${vmName}'
-var nsgName = 'nsg-dfs-server'
+@description('Windows Server and SQL image offer')
+@allowed([
+  'sql2017-ws2019'
+])
+param imageOffer string = 'sql2017-ws2019'
+
+@description('SQL Server SKU (Standard/Enterprise/Web for sql2017-ws2019)')
+@allowed([
+  'standard'
+  'enterprise'
+  'web'
+])
+param sqlSku string = 'standard'
+
+var nicName = '${vmName}-nic'
+var nsgName = '${subnetName}-nsg'
 
 //
-// EXISTING VNET / SUBNET - we DO NOT create them
+// Existing VNet + Subnet
 //
-resource vnet 'Microsoft.Network/virtualNetworks@2023-04-01' existing = {
+resource vnet 'Microsoft.Network/virtualNetworks@2022-01-01' existing = {
   name: vnetName
 }
 
-resource subnet 'Microsoft.Network/virtualNetworks/subnets@2023-04-01' existing = {
+resource subnet 'Microsoft.Network/virtualNetworks/subnets@2022-01-01' existing = {
   name: subnetName
   parent: vnet
 }
 
 //
-// NSG with only VNet/peered-VNet allowed, no Internet outbound
+// NSG – only allow in/out from VirtualNetwork (includes peered VNets)
 //
-resource nsg 'Microsoft.Network/networkSecurityGroups@2023-04-01' = {
+resource nsg 'Microsoft.Network/networkSecurityGroups@2022-01-01' = {
   name: nsgName
   location: location
   properties: {
     securityRules: [
-      // Inbound: allow only from VNet (includes peered VNets)
+      // INBOUND
       {
-        name: 'allow-vnet-inbound'
+        name: 'Allow_VNet_Inbound'
         properties: {
           priority: 100
           direction: 'Inbound'
@@ -52,14 +68,13 @@ resource nsg 'Microsoft.Network/networkSecurityGroups@2023-04-01' = {
           sourcePortRange: '*'
           destinationPortRange: '*'
           sourceAddressPrefix: 'VirtualNetwork'
-          destinationAddressPrefix: 'VirtualNetwork'
+          destinationAddressPrefix: '*'
         }
       }
-      // Inbound: deny everything else
       {
-        name: 'deny-all-inbound'
+        name: 'Deny_All_Inbound'
         properties: {
-          priority: 4096
+          priority: 200
           direction: 'Inbound'
           access: 'Deny'
           protocol: '*'
@@ -70,9 +85,9 @@ resource nsg 'Microsoft.Network/networkSecurityGroups@2023-04-01' = {
         }
       }
 
-      // Outbound: allow VNet only (includes peered VNets)
+      // OUTBOUND
       {
-        name: 'allow-vnet-outbound'
+        name: 'Allow_VNet_Outbound'
         properties: {
           priority: 100
           direction: 'Outbound'
@@ -80,29 +95,14 @@ resource nsg 'Microsoft.Network/networkSecurityGroups@2023-04-01' = {
           protocol: '*'
           sourcePortRange: '*'
           destinationPortRange: '*'
-          sourceAddressPrefix: 'VirtualNetwork'
+          sourceAddressPrefix: '*'
           destinationAddressPrefix: 'VirtualNetwork'
         }
       }
-      // Outbound: explicitly deny Internet
       {
-        name: 'deny-internet-outbound'
+        name: 'Deny_All_Outbound'
         properties: {
           priority: 200
-          direction: 'Outbound'
-          access: 'Deny'
-          protocol: '*'
-          sourcePortRange: '*'
-          destinationPortRange: '*'
-          sourceAddressPrefix: 'VirtualNetwork'
-          destinationAddressPrefix: 'Internet'
-        }
-      }
-      // Outbound: final deny-all sweeper
-      {
-        name: 'deny-all-outbound'
-        properties: {
-          priority: 4096
           direction: 'Outbound'
           access: 'Deny'
           protocol: '*'
@@ -117,9 +117,26 @@ resource nsg 'Microsoft.Network/networkSecurityGroups@2023-04-01' = {
 }
 
 //
-// NIC (no public IP) with NSG attached and existing subnet
+// Attach NSG to existing subnet WITHOUT touching addressPrefix, delegations, etc.
 //
-resource nic 'Microsoft.Network/networkInterfaces@2023-04-01' = {
+module attachNsg 'update-subnet.bicep' = {
+  name: 'update-vnet-subnet-${vnetName}-${subnetName}'
+  params: {
+    vnetName: vnetName
+    subnetName: subnetName
+    // Take existing subnet properties and just add networkSecurityGroup
+    properties: union(subnet.properties, {
+      networkSecurityGroup: {
+        id: nsg.id
+      }
+    })
+  }
+}
+
+//
+// NIC (no public IP – only reachable from peered networks / VPN / Bastion)
+//
+resource nic 'Microsoft.Network/networkInterfaces@2022-01-01' = {
   name: nicName
   location: location
   properties: {
@@ -134,39 +151,40 @@ resource nic 'Microsoft.Network/networkInterfaces@2023-04-01' = {
         }
       }
     ]
-    networkSecurityGroup: {
-      id: nsg.id
-    }
   }
 }
 
 //
-// VM: Windows Server 2022
+// VM – Windows Server 2019 + SQL Server 2017
 //
-resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
+resource vm 'Microsoft.Compute/virtualMachines@2022-03-01' = {
   name: vmName
   location: location
   properties: {
     hardwareProfile: {
       vmSize: vmSize
     }
-    osProfile: {
-      computerName: vmName
-      adminUsername: adminUsername
-      adminPassword: adminPassword
-    }
     storageProfile: {
-      imageReference: {
-        publisher: 'MicrosoftWindowsServer'
-        offer: 'WindowsServer'
-        sku: '2022-datacenter-azure-edition'
-        version: 'latest'
-      }
       osDisk: {
         createOption: 'FromImage'
         managedDisk: {
           storageAccountType: 'Premium_LRS'
         }
+      }
+      imageReference: {
+        publisher: 'MicrosoftSQLServer'
+        offer: imageOffer      // sql2017-ws2019
+        sku: sqlSku            // standard | enterprise | web
+        version: 'latest'
+      }
+    }
+    osProfile: {
+      computerName: vmName
+      adminUsername: adminUsername
+      adminPassword: adminPassword
+      windowsConfiguration: {
+        enableAutomaticUpdates: true
+        provisionVMAgent: true
       }
     }
     networkProfile: {
@@ -177,22 +195,10 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
       ]
     }
   }
+  dependsOn: [
+    attachNsg
+  ]
 }
 
-//
-// VM extension to install DFS roles
-//
-resource vmDfsExt 'Microsoft.Compute/virtualMachines/extensions@2023-09-01' = {
-  name: 'InstallDFS'
-  parent: vm
-  location: location
-  properties: {
-    publisher: 'Microsoft.Compute'
-    type: 'CustomScriptExtension'
-    typeHandlerVersion: '1.10'
-    autoUpgradeMinorVersion: true
-    settings: {
-      commandToExecute: 'powershell.exe -ExecutionPolicy Unrestricted -Command "Install-WindowsFeature FS-DFS-Namespace, FS-DFS-Replication -IncludeManagementTools"'
-    }
-  }
-}
+output vmNameOut string = vm.name
+output subnetNsgId string = nsg.id
