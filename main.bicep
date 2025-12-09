@@ -182,8 +182,10 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
 //
 // Custom Script Extension to install DFS (Namespaces + Replication)
 //
-resource vmDfsExt 'Microsoft.Compute/virtualMachines/extensions@2024-07-01' = {
-  name: '${vm.name}/InstallDFS'
+// VM extension to install DFS roles
+resource vmDfsExt 'Microsoft.Compute/virtualMachines/extensions@2023-09-01' = {
+  name: 'InstallDFS'          // simple name, no "/"
+  parent: vm                  // this makes it a child of the VM
   location: location
   properties: {
     publisher: 'Microsoft.Compute'
@@ -195,4 +197,3 @@ resource vmDfsExt 'Microsoft.Compute/virtualMachines/extensions@2024-07-01' = {
     }
   }
 }
-
